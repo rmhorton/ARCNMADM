@@ -1,0 +1,545 @@
+---
+title: "NMADM Chapter02"
+author: "Bob"
+date: "2025-05-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message=FALSE, warning=FALSE}
+# libraries
+library('rjags')      # coda.samples
+library('jagsUI')     # wrapper for rjags
+library('mcmcplots')  # caterplot
+library('coda')
+library('knitr')
+library('dplyr')
+library('tidyr')
+library('ggplot2')
+library('knitr')      # HTML table display
+```
+
+## Notes:
+
+* Results the multi-comparison models have not been checked against WinBUGS yet.
+* In the last example, I found a new WinBUGS :: JAGS difference I had not seen before: 
+`w[i,1:k-1]` -> `w[i,1:(k-1)]`
+
+# Ch2_FE_Bi_logit_pair
+
+Thrombolytics example - two treatments only
+treatment 1 = a-tPA
+treatment 2 = PTCA
+
+Binomial likelihood, logit link, pairwise meta-analysis (2 treatments)
+Fixed effect model
+
+This code is part of Dias, Ades, Welton, Jansen and Sutton (2018) Network Meta-Analysis for Decision Making. 
+This work should be cited whenever the code is used whether in its standard form or adapted.
+
+```{r Ch2_FE_Bi_logit_pair}
+model_code <- "
+model{                                 # *** PROGRAM STARTS
+for(i in 1:ns){                        # LOOP THROUGH STUDIES
+    mu[i] ~ dnorm(0,.0001)             # vague priors for all trial baselines
+    for (k in 1:2) {                   # LOOP THROUGH ARMS
+        r[i,k] ~ dbin(p[i,k],n[i,k])   # binomial likelihood
+        logit(p[i,k]) <- mu[i] + d[k]  # model for linear predictor
+      }
+  }   
+d[1]<- 0              # treatment effect is zero for reference treatment
+d[2] ~ dnorm(0,.0001) # vague prior for treatment effect
+or <- exp(d[2])       # calculates the odds ratio
+prob.harm <- step(d[2])  # calculates probability treat 2 is harmful
+}                                     # *** PROGRAM ENDS                         
+" |> textConnection()
+
+# Data (Extended Thrombolytics example - 2 treatments)
+
+df <- "r[,1]	n[,1]	r[,2]	n[,2]	Study_ID
+3	55	1	55	Ribichini_1996
+10	94	3	95	Garcia_1997
+40	573	32	565	GUSTO-2_1997
+5	75	5	75	Vermeer_1999
+5	69	3	71	Schomig_2000
+2	61	3	62	LeMay_2001
+19	419	20	421	Bonnefoy_2002
+59	782	52	790	Andersen_2002
+5	81	2	81	Kastrati_2002
+16	226	12	225	Aversano_2002
+8	66	6	71	Grines_2002" |> textConnection() |> read.delim()
+
+
+data <- list(
+  r = cbind(df[,1], df[,3]),
+  n = cbind(df[,2], df[,4]),
+  ns = nrow(df) # ns= number of studies
+)   
+
+
+
+# Initial Values
+initial_values = list(
+  #chain 1
+  list(d=c( NA, 0),  mu=c(0,0,0,0,0,     0,0,0,0,0,     0)),
+  #chain 2
+  list(d=c( NA, -1), mu=c(-3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3)),
+  #chain 3
+  list(d=c( NA, 2), mu=c(-3,5,-1,-3,7,     -3,-4,-3,-3,0,     -7))
+)
+
+results <- jags(
+  data = data,
+  inits = initial_values,
+  parameters.to.save = c("d", "or", "prob.harm"), # Monitor: d, or, prob.harm
+  model.file = model_code,
+  n.chains = length(initial_values),
+  n.adapt = 100,
+  n.iter = 60000,
+  n.burnin = 10000
+)
+
+results_summary <- summary(results)
+
+results_summary[c('d[2]', 'or', 'prob.harm'), c("mean", "sd", "2.5%", "50%", "97.5%")] %>% 
+  knitr::kable(., format='html', escape=FALSE, caption="JAGS Results")
+
+#  Results
+# Convergence at 10,000; 3 chains 
+
+
+
+
+WinBUGS_results_df <- "node	 mean	 sd	 MC_error	2.5%	median	97.5%	start	sample
+d[2]	-0.2336	0.1178	7.668E-4	-0.4654	-0.2333	-0.002876	10001	60000
+or	0.7971	0.09416	6.144E-4	0.6279	0.7919	0.9971	10001	60000
+prob.harm	0.02362	0.1519	7.52E-4	0.0	0.0	0.0	10001	60000" %>% 
+  gsub("[ |\t]+", " ", .) %>% # !!! tabs get converted to one or more spaces in RStudio; make them all one space
+  textConnection() %>% 
+  read.delim(sep=' ', row.names=1)
+
+WinBUGS_results_df %>% 
+  knitr::kable(., format='html', escape=FALSE, caption="WinBUGS Results")
+
+```
+
+# Ch2_FE_Bi_logit
+
+Extended Thrombolytics example (Caldwell et al, BMJ 2005)
+
+```
+=============================
+Treatment codes
+1	SK
+2	t-PA
+3	at-PA
+4	SK+t-PA
+5	r-PA
+6	TNK
+7	PTCA
+=============================
+```
+
+Binomial likelihood, logit link
+Fixed effect model 
+
+This code is part of Dias, Ades, Welton, Jansen and Sutton (2018) Network Meta-Analysis for Decision Making. 
+This work should be cited whenever the code is used whether in its standard form or adapted.
+
+
+```{r Ch2_FE_Bi_logit}
+model_code <- "
+data{
+  smidge <- 2.225074e-308 # !!! kludge alert !!! add a smidge to denominator to avoid dividing by zero.
+}
+
+model{
+  for(i in 1:ns){                 # LOOP THROUGH STUDIES
+    mu[i] ~ dnorm(0,.0001)        # vague priors for all trial baselines
+    for (k in 1:na[i])  {         # LOOP THROUGH ARMS
+        r[i,k] ~ dbin(p[i,k],n[i,k])    # binomial likelihood
+        # model for linear predictor
+        logit(p[i,k]) <- mu[i] + d[t[i,k]] - d[t[i,1]]
+    }
+  }   
+  d[1] <- 0    # treatment effect is zero for reference treatment
+  # vague priors for treatment effects
+  for (k in 2:nt){  d[k] ~ dnorm(0,.0001) }
+  # pairwise ORs and LORs for all possible pair-wise comparisons
+  for (c in 1:(nt-1)) {  
+    for (k in (c+1):nt)  { 
+      or[c,k] <- exp(d[k] - d[c])
+      lor[c,k] <- (d[k] - d[c])
+    }  
+  }
+  # ranking on relative scale
+  rk <-  rank(d[]) # !!! Bob
+  for (k in 1:nt) { 
+      # rk[k] <- nt+1-rank(d[],k)	# assumes events are 'good'
+      # rk[k] <- rank(d[],k)	# assumes events are 'bad' # !!! rank function different in JAGS
+      best[k] <- equals(rk[k],1)	#calculate probability that treat k is best
+      # calculates probability that treat k is h-th best
+      for (h in 1:nt){  prob[h,k] <- equals(rk[k],h)  }
+   }
+  # Provide estimates of treatment effects T[k] on the natural (probability) scale 
+  # Given a Mean Effect, meanA, for treatment 1, with precision (1/variance) precA
+  A ~ dnorm(meanA,precA)
+  for (k in 1:nt) { logit(T[k]) <- A + d[k]  }
+  # Provide estimates of number needed to treat NNT[k], Risk Difference RD[k], 
+  # and Relative Risk RR[k], for each treatment, relative to treatment 1
+  for (k in 2:nt) { 
+    # NNT[k] <- 1/(T[k] - T[1] + smidge)	# assumes events are 'good'
+    NNT[k] <- 1/(T[1] - T[k] + smidge)	  # assumes events are 'bad'
+    RD[k] <- T[k] - T[1]
+    RR[k] <- T[k]/T[1]
+  }
+}" |> textConnection()
+
+
+load_data_from_string <- function(data_str){
+  # R does not like solumn names with special characters like square brackets,
+  # but we can re-set them to their original values.
+  column_names <- data_str %>% strsplit("\\n") %>% "[["(1) %>% "[["(1) %>% strsplit("\\t") %>% "[["(1)
+  df <- data_str |> textConnection() |> read.delim(row.names=NULL) %>% setNames(nm=column_names)
+}
+
+
+df <- "na[]	t[,1]	t[,2]	t[,3]	r[,1]	n[,1]	r[,2]	n[,2]	r[,3]	n[,3]	ID	year
+3	1	3	4	1472	20251	652	10396	723	10374	GUSTO-1	1993
+2	1	2	NA	3	65	3	64	NA	NA	ECSG	1985
+2	1	2	NA	12	159	7	157	NA	NA	TIMI-1	1987
+2	1	2	NA	7	85	4	86	NA	NA	PAIMS	1989
+2	1	2	NA	10	135	5	135	NA	NA	White	1989
+2	1	2	NA	887	10396	929	10372	NA	NA	GISSI-2	1990
+2	1	2	NA	5	63	2	59	NA	NA	Cherng	1992
+2	1	2	NA	1455	13780	1418	13746	NA	NA	ISIS-3	1992
+2	1	2	NA	9	130	6	123	NA	NA	CI	1993
+2	1	4	NA	4	107	6	109	NA	NA	KAMIT	1991
+2	1	5	NA	285	3004	270	3006	NA	NA	INJECT	1995
+2	1	7	NA	11	149	2	152	NA	NA	Zijlstra	1993
+2	1	7	NA	1	50	3	50	NA	NA	Riberio	1993
+2	1	7	NA	8	58	5	54	NA	NA	Grinfeld	1996
+2	1	7	NA	1	53	1	47	NA	NA	Zijlstra	1997
+2	1	7	NA	4	45	0	42	NA	NA	Akhras	1997
+2	1	7	NA	14	99	7	101	NA	NA	Widimsky	2000
+2	1	7	NA	9	41	3	46	NA	NA	DeBoer	2002
+2	1	7	NA	42	421	29	429	NA	NA	Widimsky	2002
+2	2	7	NA	2	44	3	46	NA	NA	DeWood	1990
+2	2	7	NA	13	200	5	195	NA	NA	Grines	1993
+2	2	7	NA	2	56	2	47	NA	NA	Gibbons	1993
+2	3	5	NA	13	155	7	169	NA	NA	RAPID-2	1996
+2	3	5	NA	356	4921	757	10138	NA	NA	GUSTO-3	1997
+2	3	6	NA	522	8488	523	8461	NA	NA	ASSENT-2	1999
+2	3	7	NA	3	55	1	55	NA	NA	Ribichini	1996
+2	3	7	NA	10	94	3	95	NA	NA	Garcia	1997
+2	3	7	NA	40	573	32	565	NA	NA	GUSTO-2	1997
+2	3	7	NA	5	75	5	75	NA	NA	Vermeer	1999
+2	3	7	NA	5	69	3	71	NA	NA	Schomig	2000
+2	3	7	NA	2	61	3	62	NA	NA	LeMay	2001
+2	3	7	NA	19	419	20	421	NA	NA	Bonnefoy	2002
+2	3	7	NA	59	782	52	790	NA	NA	Andersen	2002
+2	3	7	NA	5	81	2	81	NA	NA	Kastrati	2002
+2	3	7	NA	16	226	12	225	NA	NA	Aversano	2002
+2	3	7	NA	8	66	6	71	NA	NA	Grines	2002" %>% load_data_from_string
+
+
+data <- list(
+  na = df$na[],
+  t = cbind(df[['t[,1]']], df[['t[,2]']], df[['t[,3]']]),
+  r = cbind(df[['r[,1]']], df[['r[,2]']], df[['r[,3]']]),
+  n = cbind(df[['n[,1]']], df[['n[,2]']], df[['n[,3]']]),
+  ns=36, # number of studies
+  nt=7,  # number of treatments
+  meanA= -2.39, 
+  precA=11.9)
+
+# Initial Values 
+initial_values <- list(
+  #chain 1
+  list(d=c( NA, 0,0,0,0,      0,0), mu=c(0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0)),
+  #chain 2
+  list(d=c( NA, -1,-1,-1,-1,    -1,-1), mu=c(-3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3)),
+  #chain 3
+  list(d=c( NA, 2,5,-3,1,     -7,4), mu=c(-3, 5,-1,-3,7,      -3, -4, -3, -3, 9,    -3, -3,-4, 3, 5,      -3, -2, 1, -3, -7,      -3,5,-1,-3,7,     -3,-4,-3,-3,0,     -3, 5,-1,-3,7,      -7))
+)
+
+results <- jags(
+  data = data,
+  inits = initial_values,
+  parameters.to.save = c("d", "or", "NNT", "RD", "RR"),
+  model.file = model_code,
+  n.chains = length(initial_values),
+  n.adapt = 100,
+  n.iter = 60000,
+  n.burnin = 10000
+)
+
+summary(results)
+
+```
+
+I have not checked these results against WinBUGS yet.
+
+
+# Ch2_RE_Bi_logit_pair
+
+Thrombolytics example - two treatments only
+treatment 1 = a-tPA
+treatment 2 = PTCA
+
+Binomial likelihood, logit link, pairwise meta-analysis (2 treatments)
+Random effects model
+
+This code is part of Dias, Ades, Welton, Jansen and Sutton (2018) Network Meta-Analysis for Decision Making. 
+This work should be cited whenever the code is used whether in its standard form or adapted.
+
+
+```{r Ch2_RE_Bi_logit_pair}
+
+model_code <- "model{             # *** PROGRAM STARTS
+  for(i in 1:ns){                 # LOOP THROUGH STUDIES
+    delta[i,1] <- 0               # treatment effect is zero for control arm
+    mu[i] ~ dnorm(0,.0001)        # vague priors for all trial baselines
+    for (k in 1:2) {              # LOOP THROUGH ARMS
+      r[i,k] ~ dbin(p[i,k],n[i,k])        # binomial likelihood
+      logit(p[i,k]) <- mu[i] + delta[i,k] # model for linear predictor
+    }
+    delta[i,2] ~ dnorm(d[2],tau)  # trial-specific LOR distributions
+  }
+  d[1]<- 0                        # treatment effect is zero for reference treatment
+  d[2] ~ dnorm(0,.0001)           # vague prior for treatment effect
+  sd ~ dunif(0,2)                 # vague prior for between-trial SD
+  tau <- pow(sd,-2)               # between-trial precision = (1/between-trial variance)
+  OR <- exp(d[2])                 # calculates the odds ratio
+  prob.harm <- step(d[2])         # calculates probability treat 2 is harmful
+}                                 # *** PROGRAM ENDS
+" |> textConnection()
+
+df <- "r[,1]	n[,1]	r[,2]	n[,2]\tID\tyear
+3	55	1	55	Ribichini	1996
+10	94	3	95	Garcia	1997
+40	573	32	565	GUSTO-2	1997
+5	75	5	75	Vermeer	1999
+5	69	3	71	Schomig	2000
+2	61	3	62	LeMay	2001
+19	419	20	421	Bonnefoy	2002
+59	782	52	790	Andersen	2002
+5	81	2	81	Kastrati	2002
+16	226	12	225	Aversano	2002
+8	66	6	71	Grines	2002" %>% load_data_from_string
+
+data <- list(
+  r = cbind(df[['r[,1]']], df[['r[,2]']]),
+  n = cbind(df[['n[,1]']], df[['n[,2]']]),
+  ns = nrow(df) # number of studies
+) 
+
+initial_values <- list(
+  # chain 1
+  list(d=c( NA, 0), sd=1, mu=c(0,0,0,0,0,     0,0,0,0,0,     0)),
+  # chain 2
+  list(d=c( NA, -1), sd=0.1, mu=c(-3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3)),
+  # chain 3
+  list(d=c( NA, 2), sd=0.5, mu=c(-3,5,-1,-3,7,     -3,-4,-3,-3,0,     -7))
+)
+
+results <- jags(
+  data = data,
+  # inits = initial_values,
+  parameters.to.save = c("d", "sd", "OR", "prob.harm"),
+  model.file = model_code,
+  n.chains = length(initial_values),
+  n.adapt = 100,
+  n.iter = 60000,
+  n.burnin = 10000
+)
+
+summary(results)[,c('mean', 'sd', '2.5%', '50%', '97.5%')] %>% 
+  knitr::kable(., format='html', escape=FALSE, caption="JAGS Results")
+
+
+WinBUGS_results_df <- "node	 mean	 sd	 MC error	2.5%	median	97.5%	start	sample
+OR	0.7724	0.1197	0.002062	0.5485	0.7684	1.022	10001	60000
+d[2]	-0.2705	0.1576	0.002687	-0.6006	-0.2635	0.02178	10001	60000
+prob.harm	0.03452	0.1826	0.002824	0.0	0.0	1.0	10001	60000
+sd	0.1966	0.1734	0.003771	0.007339	0.1513	0.6419	10001	60000" %>%
+  load_data_from_string 
+
+WinBUGS_results_df %>%
+  knitr::kable(., format='html', escape=FALSE, caption="WinBUGS Results")
+```
+
+
+# Ch2_RE_Bi_logit
+
+Extended Thrombolytics example (Caldwell et al, BMJ 2005)
+
+```
+=============================
+Treatment codes
+1	SK
+2	t-PA
+3	at-PA
+4	SK+t-PA
+5	r-PA
+6	TNK
+7	PTCA
+============================= 
+```
+
+Binomial likelihood, logit link
+Random effects model for multi-arm trials
+
+This code is part of Dias, Ades, Welton, Jansen and Sutton (2018) Network Meta-Analysis for Decision Making. 
+This work should be cited whenever the code is used whether in its standard form or adapted.
+
+
+```{r Ch2_RE_Bi_logit}
+
+model_code <- "
+data{
+  smidge <- 2.225074e-308 # !!! kludge alert !!! add a smidge to denominator to avoid dividing by zero.
+}
+
+model{                                 # *** PROGRAM STARTS
+  for(i in 1:ns){                      # LOOP THROUGH STUDIES
+      w[i,1] <- 0                      # adjustment for multi-arm trials is zero for control arm
+      delta[i,1] <- 0                  # treatment effect is zero for control arm
+      mu[i] ~ dnorm(0,.0001)           # vague priors for all trial baselines
+      for (k in 1:na[i]) {             # LOOP THROUGH ARMS
+          r[i,k] ~ dbin(p[i,k],n[i,k]) # binomial likelihood
+          logit(p[i,k]) <- mu[i] + delta[i,k]  # model for linear predictor
+      }
+      for (k in 2:na[i]) {             # LOOP THROUGH ARMS
+          # trial-specific LOR distributions
+          delta[i,k] ~ dnorm(md[i,k], taud[i,k])
+          # mean of LOR distributions (with multi-arm trial correction)
+          md[i,k] <-  d[t[i,k]] - d[t[i,1]] + sw[i,k]
+          # precision of LOR distributions (with multi-arm trial correction)
+          taud[i,k] <- tau *2*(k-1)/k
+          # adjustment for multi-arm RCTs
+          w[i,k] <- (delta[i,k] - d[t[i,k]] + d[t[i,1]])
+          # cumulative adjustment for multi-arm trials
+          sw[i,k] <- sum(w[i,1:(k-1)])/(k-1)  # !!! Index out of range error: put parentheses around (k-1)
+      }
+  }   
+  d[1]<-0             # treatment effect is zero for reference treatment
+  # vague priors for treatment effects
+  for (k in 2:nt){  d[k] ~ dnorm(0,.0001) }
+  sd ~ dunif(0,2)     # vague prior for between-trial SD
+  tau <- pow(sd,-2)   # between-trial precision = (1/between-trial variance)
+  # pairwise ORs and LORs for all possible pair-wise comparisons
+  for (c in 1:(nt-1)) {  
+    for (k in (c+1):nt)  { 
+      or[c,k] <- exp(d[k] - d[c])
+      lor[c,k] <- (d[k]-d[c])
+    }  
+  }
+  # ranking on relative scale
+  rank_d <- rank(d)
+  for (k in 1:nt) { 
+    # rk[k] <- nt+1-rank_d[k]	# assumes events are 'good'; !!! was 'nt+1-rank(d[],k)' in WinBugs
+    rk[k] <- rank_d[k]	# assumes events are 'bad' !!! was 'rank(d[],k)' in WinBugs
+    best[k] <- equals(rk[k],1)	#calculate probability that treat k is best
+    # calculates probability that treat k is h-th best
+    for (h in 1:nt){  prob[h,k] <- equals(rk[k],h)}
+  }
+  # Provide estimates of treatment effects T[k] on the natural (probability) scale 
+  # Given a Mean Effect, meanA, for treatment 1, with precision (1/variance) precA
+  A ~ dnorm(meanA,precA)
+  for (k in 1:nt) { logit(T[k]) <- A + d[k]  }
+  # Provide estimates of number needed to treat NNT[k], Risk Difference RD[k], 
+  # and Relative Risk RR[k], for each treatment, relative to treatment 1
+  for (k in 2:nt) { 
+    # NNT[k] <- 1/(T[k] - T[1] + smidge)	# assumes events are 'good'
+    NNT[k] <- 1/(T[1] - T[k] + smidge)	# assumes events are 'bad'
+    RD[k] <- T[k] - T[1]
+    RR[k] <- T[k]/T[1]
+  }
+}                                    # *** PROGRAM ENDS                          
+" %>% textConnection()
+
+df <- "na[]	t[,1]	t[,2]	t[,3]	r[,1]	n[,1]	r[,2]	n[,2]	r[,3]	n[,3]	#	ID	year
+3	1	3	4	1472	20251	652	10396	723	10374	#	GUSTO-1	1993
+2	1	2	NA	3	65	3	64	NA	NA	#	ECSG	1985
+2	1	2	NA	12	159	7	157	NA	NA	#	TIMI-1	1987
+2	1	2	NA	7	85	4	86	NA	NA	#	PAIMS	1989
+2	1	2	NA	10	135	5	135	NA	NA	#	White	1989
+2	1	2	NA	887	10396	929	10372	NA	NA	#	GISSI-2	1990
+2	1	2	NA	5	63	2	59	NA	NA	#	Cherng	1992
+2	1	2	NA	1455	13780	1418	13746	NA	NA	#	ISIS-3	1992
+2	1	2	NA	9	130	6	123	NA	NA	#	CI	1993
+2	1	4	NA	4	107	6	109	NA	NA	#	KAMIT	1991
+2	1	5	NA	285	3004	270	3006	NA	NA	#	INJECT	1995
+2	1	7	NA	11	149	2	152	NA	NA	#	Zijlstra	1993
+2	1	7	NA	1	50	3	50	NA	NA	#	Riberio	1993
+2	1	7	NA	8	58	5	54	NA	NA	#	Grinfeld	1996
+2	1	7	NA	1	53	1	47	NA	NA	#	Zijlstra	1997
+2	1	7	NA	4	45	0	42	NA	NA	#	Akhras	1997
+2	1	7	NA	14	99	7	101	NA	NA	#	Widimsky	2000
+2	1	7	NA	9	41	3	46	NA	NA	#	DeBoer	2002
+2	1	7	NA	42	421	29	429	NA	NA	#	Widimsky	2002
+2	2	7	NA	2	44	3	46	NA	NA	#	DeWood	1990
+2	2	7	NA	13	200	5	195	NA	NA	#	Grines	1993
+2	2	7	NA	2	56	2	47	NA	NA	#	Gibbons	1993
+2	3	5	NA	13	155	7	169	NA	NA	#	RAPID-2	1996
+2	3	5	NA	356	4921	757	10138	NA	NA	#	GUSTO-3	1997
+2	3	6	NA	522	8488	523	8461	NA	NA	#	ASSENT-2	1999
+2	3	7	NA	3	55	1	55	NA	NA	#	Ribichini	1996
+2	3	7	NA	10	94	3	95	NA	NA	#	Garcia	1997
+2	3	7	NA	40	573	32	565	NA	NA	#	GUSTO-2	1997
+2	3	7	NA	5	75	5	75	NA	NA	#	Vermeer	1999
+2	3	7	NA	5	69	3	71	NA	NA	#	Schomig	2000
+2	3	7	NA	2	61	3	62	NA	NA	#	LeMay	2001
+2	3	7	NA	19	419	20	421	NA	NA	#	Bonnefoy	2002
+2	3	7	NA	59	782	52	790	NA	NA	#	Andersen	2002
+2	3	7	NA	5	81	2	81	NA	NA	#	Kastrati	2002
+2	3	7	NA	16	226	12	225	NA	NA	#	Aversano	2002
+2	3	7	NA	8	66	6	71	NA	NA	#	Grines	2002" %>% load_data_from_string
+
+data <- list(
+  na = df[['na[]']],
+  t = cbind(df[['t[,1]']], df[['t[,2]']], df[['t[,3]']]),
+  r = cbind(df[['r[,1]']], df[['r[,2]']], df[['r[,3]']]),
+  n = cbind(df[['n[,1]']], df[['n[,2]']], df[['n[,3]']]),
+  ns = nrow(df), # number of studies
+  nt = 7,  # number of treatments
+  meanA = -2.39, 
+  precA = 11.9
+)
+
+initial_values <- list(
+  # chain 1
+  list(d=c( NA, 0,0,0,0,      0,0), sd=1,
+mu=c(0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0)),
+
+  # chain 2
+  list(d=c( NA, -1,-1,-1,-1,    -1,-1), sd=.5,
+  mu=c(-3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3,-3,-3,-3,-3,     -3)),
+
+  # chain 3
+  list(d=c( NA, 2,5,-3,1,     -7,4), sd=.1,
+  mu=c(-3, 5,-1,-3,7,      -3, -4, -3, -3, 9,    -3, -3,-4, 3, 5,      -3, -2, 1, -3, -7,      -3,5,-1,-3,7,     -3,-4,-3,-3,0,     -3, 5,-1,-3,7,      -7))
+)
+
+
+results <- jags(
+  data = data,
+  # inits = initial_values,
+  parameters.to.save = c("d", "sd", "OR", "prob.harm"),
+  model.file = model_code,
+  n.chains = length(initial_values),
+  n.adapt = 100,
+  n.iter = 60000,
+  n.burnin = 10000
+)
+
+summary(results)[,c('mean', 'sd', '2.5%', '50%', '97.5%')] %>% 
+  knitr::kable(., format='html', escape=FALSE, caption="JAGS Results")
+
+```
+
+These results have not been checked against WinBUGS yet.
