@@ -20,6 +20,8 @@ library('dplyr')
 library('tidyr')
 library('ggplot2')
 library('knitr')      # HTML table display
+
+source('NMA_utils.R')
 ```
 
 ## Notes:
@@ -59,7 +61,7 @@ prob.harm <- step(d[2])  # calculates probability treat 2 is harmful
 
 # Data (Extended Thrombolytics example - 2 treatments)
 
-df <- "r[,1]	n[,1]	r[,2]	n[,2]	Study_ID
+data_df <- "r[,1]	n[,1]	r[,2]	n[,2]	Study_ID
 3	55	1	55	Ribichini_1996
 10	94	3	95	Garcia_1997
 40	573	32	565	GUSTO-2_1997
@@ -73,12 +75,11 @@ df <- "r[,1]	n[,1]	r[,2]	n[,2]	Study_ID
 8	66	6	71	Grines_2002" |> textConnection() |> read.delim()
 
 
-data <- list(
-  r = cbind(df[,1], df[,3]),
-  n = cbind(df[,2], df[,4]),
-  ns = nrow(df) # ns= number of studies
+my_data <- list(
+  r = cbind(data_df[,1], data_df[,3]),
+  n = cbind(data_df[,2], data_df[,4]),
+  ns = nrow(data_df) # ns= number of studies
 )   
-
 
 
 # Initial Values
@@ -92,7 +93,7 @@ initial_values = list(
 )
 
 results <- jags(
-  data = data,
+  data = my_data,
   inits = initial_values,
   parameters.to.save = c("d", "or", "prob.harm"), # Monitor: d, or, prob.harm
   model.file = model_code,
@@ -153,7 +154,7 @@ This work should be cited whenever the code is used whether in its standard form
 ```{r Ch2_FE_Bi_logit}
 model_code <- "
 data{
-  smidge <- 2.225074e-308 # !!! kludge alert !!! add a smidge to denominator to avoid dividing by zero.
+  smidge <- 2.225074e-308 # !!! kludge alert !!! Add a smidge to denominator to avoid dividing by zero.
 }
 
 model{
@@ -199,15 +200,8 @@ model{
 }" |> textConnection()
 
 
-load_data_from_string <- function(data_str){
-  # R does not like solumn names with special characters like square brackets,
-  # but we can re-set them to their original values.
-  column_names <- data_str %>% strsplit("\\n") %>% "[["(1) %>% "[["(1) %>% strsplit("\\t") %>% "[["(1)
-  df <- data_str |> textConnection() |> read.delim(row.names=NULL) %>% setNames(nm=column_names)
-}
 
-
-df <- "na[]	t[,1]	t[,2]	t[,3]	r[,1]	n[,1]	r[,2]	n[,2]	r[,3]	n[,3]	ID	year
+data_df <- "na[]	t[,1]	t[,2]	t[,3]	r[,1]	n[,1]	r[,2]	n[,2]	r[,3]	n[,3]	ID	year
 3	1	3	4	1472	20251	652	10396	723	10374	GUSTO-1	1993
 2	1	2	NA	3	65	3	64	NA	NA	ECSG	1985
 2	1	2	NA	12	159	7	157	NA	NA	TIMI-1	1987
@@ -243,18 +237,18 @@ df <- "na[]	t[,1]	t[,2]	t[,3]	r[,1]	n[,1]	r[,2]	n[,2]	r[,3]	n[,3]	ID	year
 2	3	7	NA	59	782	52	790	NA	NA	Andersen	2002
 2	3	7	NA	5	81	2	81	NA	NA	Kastrati	2002
 2	3	7	NA	16	226	12	225	NA	NA	Aversano	2002
-2	3	7	NA	8	66	6	71	NA	NA	Grines	2002" %>% load_data_from_string
+2	3	7	NA	8	66	6	71	NA	NA	Grines	2002" %>% 
+  load_dataframe_from_string
 
+my_data <- data_df %>%
+  load_matrix_data_from_df %>%
+  append(list(
+    ns = nrow(data_df), # number of studies
+    nt = 7,  # number of treatments
+    meanA = -2.39,
+    precA = 11.9)
+  )
 
-data <- list(
-  na = df$na[],
-  t = cbind(df[['t[,1]']], df[['t[,2]']], df[['t[,3]']]),
-  r = cbind(df[['r[,1]']], df[['r[,2]']], df[['r[,3]']]),
-  n = cbind(df[['n[,1]']], df[['n[,2]']], df[['n[,3]']]),
-  ns=36, # number of studies
-  nt=7,  # number of treatments
-  meanA= -2.39, 
-  precA=11.9)
 
 # Initial Values 
 initial_values <- list(
@@ -267,7 +261,7 @@ initial_values <- list(
 )
 
 results <- jags(
-  data = data,
+  data = my_data,
   inits = initial_values,
   parameters.to.save = c("d", "or", "NNT", "RD", "RR"),
   model.file = model_code,
@@ -318,7 +312,7 @@ model_code <- "model{             # *** PROGRAM STARTS
 }                                 # *** PROGRAM ENDS
 " |> textConnection()
 
-df <- "r[,1]	n[,1]	r[,2]	n[,2]\tID\tyear
+data_df <- "r[,1]	n[,1]	r[,2]	n[,2]\tID\tyear
 3	55	1	55	Ribichini	1996
 10	94	3	95	Garcia	1997
 40	573	32	565	GUSTO-2	1997
@@ -329,13 +323,14 @@ df <- "r[,1]	n[,1]	r[,2]	n[,2]\tID\tyear
 59	782	52	790	Andersen	2002
 5	81	2	81	Kastrati	2002
 16	226	12	225	Aversano	2002
-8	66	6	71	Grines	2002" %>% load_data_from_string
+8	66	6	71	Grines	2002" %>%
+  load_dataframe_from_string
 
-data <- list(
-  r = cbind(df[['r[,1]']], df[['r[,2]']]),
-  n = cbind(df[['n[,1]']], df[['n[,2]']]),
-  ns = nrow(df) # number of studies
-) 
+my_data <- data_df %>% 
+  load_matrix_data_from_df %>%
+  append(list(
+    ns = nrow(data_df) # number of studies
+  ))
 
 initial_values <- list(
   # chain 1
@@ -347,7 +342,7 @@ initial_values <- list(
 )
 
 results <- jags(
-  data = data,
+  data = my_data,
   # inits = initial_values,
   parameters.to.save = c("d", "sd", "OR", "prob.harm"),
   model.file = model_code,
@@ -366,7 +361,7 @@ OR	0.7724	0.1197	0.002062	0.5485	0.7684	1.022	10001	60000
 d[2]	-0.2705	0.1576	0.002687	-0.6006	-0.2635	0.02178	10001	60000
 prob.harm	0.03452	0.1826	0.002824	0.0	0.0	1.0	10001	60000
 sd	0.1966	0.1734	0.003771	0.007339	0.1513	0.6419	10001	60000" %>%
-  load_data_from_string 
+  load_dataframe_from_string 
 
 WinBUGS_results_df %>%
   knitr::kable(., format='html', escape=FALSE, caption="WinBUGS Results")
@@ -462,7 +457,7 @@ model{                                 # *** PROGRAM STARTS
 }                                    # *** PROGRAM ENDS                          
 " %>% textConnection()
 
-df <- "na[]	t[,1]	t[,2]	t[,3]	r[,1]	n[,1]	r[,2]	n[,2]	r[,3]	n[,3]	#	ID	year
+data_df <- "na[]	t[,1]	t[,2]	t[,3]	r[,1]	n[,1]	r[,2]	n[,2]	r[,3]	n[,3]	#	ID	year
 3	1	3	4	1472	20251	652	10396	723	10374	#	GUSTO-1	1993
 2	1	2	NA	3	65	3	64	NA	NA	#	ECSG	1985
 2	1	2	NA	12	159	7	157	NA	NA	#	TIMI-1	1987
@@ -498,18 +493,17 @@ df <- "na[]	t[,1]	t[,2]	t[,3]	r[,1]	n[,1]	r[,2]	n[,2]	r[,3]	n[,3]	#	ID	year
 2	3	7	NA	59	782	52	790	NA	NA	#	Andersen	2002
 2	3	7	NA	5	81	2	81	NA	NA	#	Kastrati	2002
 2	3	7	NA	16	226	12	225	NA	NA	#	Aversano	2002
-2	3	7	NA	8	66	6	71	NA	NA	#	Grines	2002" %>% load_data_from_string
+2	3	7	NA	8	66	6	71	NA	NA	#	Grines	2002" %>% load_dataframe_from_string
 
-data <- list(
-  na = df[['na[]']],
-  t = cbind(df[['t[,1]']], df[['t[,2]']], df[['t[,3]']]),
-  r = cbind(df[['r[,1]']], df[['r[,2]']], df[['r[,3]']]),
-  n = cbind(df[['n[,1]']], df[['n[,2]']], df[['n[,3]']]),
-  ns = nrow(df), # number of studies
-  nt = 7,  # number of treatments
-  meanA = -2.39, 
-  precA = 11.9
-)
+my_data <- data_df %>% 
+  load_matrix_data_from_df %>%
+  append(list(
+    ns = nrow(data_df), # number of studies
+    nt = 7,  # number of treatments
+    meanA = -2.39, 
+    precA = 11.9
+  ))
+
 
 initial_values <- list(
   # chain 1
@@ -527,7 +521,7 @@ mu=c(0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     0,0,0,0,0,     
 
 
 results <- jags(
-  data = data,
+  data = my_data,
   # inits = initial_values,
   parameters.to.save = c("d", "sd", "OR", "prob.harm"),
   model.file = model_code,
